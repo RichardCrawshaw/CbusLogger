@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "CbusLogger": {
+      "commandName": "Project",
+      "commandLineArgs": "/c3"
+    }
+  }
+}

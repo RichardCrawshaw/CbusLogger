@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net5.0</TargetFramework>
+    <AssemblyName>Crowswood.CbusLogger</AssemblyName>
+    <RootNamespace>Crowswood.CbusLogger</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="cbusdefs.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="C:\Users\richa\.nuget\packages\nlog.config\4.7.11\contentFiles\any\any\NLog.config" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\..\..\.nuget\packages\nlog.schema\4.7.11\contentFiles\any\any\NLog.xsd" Link="NLog.xsd" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NLog" Version="4.7.11" />
+    <PackageReference Include="NLog.Schema" Version="4.7.11" />
+    <PackageReference Include="System.Composition.AttributedModel" Version="5.0.1" />
+    <PackageReference Include="System.IO.Ports" Version="5.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="NLog.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
