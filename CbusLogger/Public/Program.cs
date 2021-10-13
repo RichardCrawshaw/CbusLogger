@@ -1,6 +1,5 @@
 ﻿using System;
-using System.Collections.Concurrent;
-using System.IO;
+using System.Collections.Generic;
 using System.IO.Ports;
 using System.Linq;
 using System.Threading;
@@ -12,18 +11,20 @@ namespace Crowswood.CbusLogger
 {
     class Program
     {
+        #region Members
+
         private static readonly Logger logger = LogManager.GetCurrentClassLogger();
 
         private static readonly AutoResetEvent autoResetEvent = new(false);
 
-        private static int comPortNumber;
-        //private static bool interpretMessages = false;
+        private static readonly ISettings settings = Resolver.Instance.Resolve<ISettings>();
+
+        #endregion
+
+        #region Methods
 
         static int Main(string[] args)
         {
-            // Args
-            // COM Port /c<int> eg /c1 to use COM1
-            // List ports /d
             if (!GetArgs(args))
             {
                 Console.WriteLine("Press [Enter] to exit.");
@@ -31,63 +32,96 @@ namespace Crowswood.CbusLogger
                 return 0;
             }
 
-            if (comPortNumber < 1)
-            {
-                logger.Fatal(() => $"Invalid COM Port number: {comPortNumber}.");
-                return 1;
-            }
+            if (!Validate(out var returnCode))
+                return returnCode;
 
-            Console.WriteLine($"Using COM{comPortNumber}");
+            DisplaySettings();
 
-            var target = LogManager.Configuration.FindTargetByName("file");
-            while ((target != null) && (target is WrapperTargetBase))
-                target = (target as WrapperTargetBase).WrappedTarget;
-            if (target is FileTarget fileTarget)
-            {
-                var logEventInfo = new LogEventInfo { TimeStamp = DateTime.Now, };
-                var filename = fileTarget.FileName.Render(logEventInfo);
-                filename = filename.Replace(@"\/", @"\");
-                filename = filename.Replace("/", @"\");
-                Console.WriteLine($"Logging to {filename}");
-            }
+            // Start the receive processor running.
+            ThreadPool.QueueUserWorkItem(x => Process());
 
-            ThreadPool.QueueUserWorkItem(LogIncomingMessages);
+            // Wait for the user to close the application.
             Console.WriteLine("Logging incoming messages.");
             Console.WriteLine("Press [Enter] to exit.");
-
             Console.ReadLine();
 
+            // Trigger the receive routine to complete and thus disconnect the processor.
             autoResetEvent.Set();
+
+            // Wait for the receive routine to disconnect.
+            autoResetEvent.WaitOne();
 
             return 0;
         }
 
+        #endregion
+
+        #region Support routines
+
+        private static void DisplayComPorts()
+        {
+            var ports = SerialPort.GetPortNames();
+            Console.WriteLine($"{ports.Length} COM ports found:");
+            foreach (var port in ports)
+                Console.WriteLine(port);
+        }
+
+        private static void DisplayHelp()
+        {
+            Console.WriteLine("/cn\tSets COM Port n, where n > 0");
+            Console.WriteLine("/d\tDisplays all the available ports");
+            Console.WriteLine("/l[sgc][+-]\tSets the logging:");
+            Console.WriteLine("  \ts = Serial port | g = GridConnect | c = CBUS");
+            Console.WriteLine("  \t+ = enable (default) | - = disable");
+            Console.WriteLine("/on\tControls which op-codes are logged; where n is the op-code.");
+            Console.WriteLine("  \tIf any op-codes are specified all others are excluded.");
+            Console.WriteLine("/?\tDisplays this help message.");
+        }
+
+        private static void DisplaySettings()
+        {
+            Console.WriteLine($"Using COM{settings.PortNumber}");
+
+            var targetFilenames = GetTargetFilenames();
+            if (!targetFilenames.Any())
+                Console.WriteLine("Not logging to any file; check the NLog configuration in NLog.config.");
+            else
+                foreach (var filename in targetFilenames)
+                    Console.WriteLine($"Logging to {filename}.");
+
+            if (settings.LoggingSerial) Console.WriteLine("Logging serial data.");
+            if (settings.LoggingGridConnect) Console.WriteLine("Logging GridConnect data.");
+            if (settings.LoggingCbus) Console.WriteLine("Logging CBUS data.");
+        }
+
         private static bool GetArgs(string[] args)
         {
-            comPortNumber = 1;
-
-            foreach(var arg in args)
+            foreach (var arg in args)
             {
                 if (arg[0] != '/') continue;
                 switch (arg[1])
                 {
-                    case 'c':
-                        _ = int.TryParse(arg[2..], out comPortNumber);
+                    case 'c': // Specify COM port
+                    case 'C':
+                        if (int.TryParse(arg[2..], out var comPortNumber))
+                            settings.PortNumber = comPortNumber;
                         break;
-                    case 'd':
-                        var ports = SerialPort.GetPortNames();
-                        Console.WriteLine($"{ports.Length} COM ports found:");
-                        foreach (var port in ports)
-                            Console.WriteLine(port);
+                    case 'd': // Display available COM ports
+                    case 'D':
+                        DisplayComPorts();
                         return false;
-                    //case 'i':
-                    //    interpretMessages = true;
-                    //    break;
-                    case '?':
-                        Console.WriteLine("/cn\tSets COM Port n, where n > 0");
-                        Console.WriteLine("/d\tDisplays all the available ports");
-                        //Console.WriteLine("/i\tInterprets messages");
-                        Console.WriteLine("/?\tDisplays this help message.");
+                    case 'l': // Control logging
+                    case 'L':
+                        if (arg.Length > 2)
+                            GetLoggingSettings(arg[2..]);
+                        break;
+                    case 'o': // Op-Code logging
+                    case 'O':
+                        if (arg.Length > 2)
+                            GetOpCodeSettings(arg[2..]);
+                        break;
+                    case '?': // Display help
+                        DisplayHelp();
                         return false;
                 }
             }
@@ -95,29 +129,112 @@ namespace Crowswood.CbusLogger
             return true;
         }
 
-        private static void LogIncomingMessages(object state)
+        private static bool GetLoggingSettings(string arg)
         {
-            var portName = $"COM{comPortNumber}";
-            var baudRate = 115200;
-            var parity = Parity.None;
-            var dataBits = 8;
-            var stopBits = StopBits.One;
-            var serial = new SerialPortAdapter(portName, baudRate, parity, dataBits, stopBits);
-            serial.ReceivedSerialData += Serial_ReceivedSerialData;
+            switch (arg[0])
+            {
+                case 's':
+                case 'S':
+                    if (arg[1] == '+')
+                        settings.LoggingSerial = true;
+                    else if (arg[1] == '-')
+                        settings.LoggingSerial = false;
+                    return true;
+                case 'g':
+                case 'G':
+                    if (arg[1] == '+')
+                        settings.LoggingGridConnect = true;
+                    else if (arg[1] == '-')
+                        settings.LoggingGridConnect = false;
+                    return true;
+                case 'c':
+                case 'C':
+                    if (arg[1] == '+')
+                        settings.LoggingCbus = true;
+                    else if (arg[1] == '-')
+                        settings.LoggingCbus = false;
+                    return true;
+            }
 
-            serial.Open();
-
-            autoResetEvent.WaitOne();
-
-            serial.Close();
-
-            serial.ReceivedSerialData -= Serial_ReceivedSerialData;
+            return false;
         }
 
-        private static void Serial_ReceivedSerialData(object sender, ReceivedSerialDataEventArgs e)
+        private static bool GetOpCodeSettings(string arg)
         {
-            var message = new string(e.ReceivedSerialData.Select(d => (char)d).ToArray());
-            logger.Info(() => message);
+            settings.OpCodes.Add(arg);
+
+            return true;
         }
+
+        private static List<string> GetTargetFilenames()
+        {
+            var results = new List<string>();
+            foreach (var target in LogManager.Configuration.ConfiguredNamedTargets)
+            {
+                var namedTarget = target;
+                while (target is WrapperTargetBase wrapperTarget)
+                    namedTarget = wrapperTarget.WrappedTarget;
+                if (namedTarget is FileTarget fileTarget)
+                {
+                    var logEventInfo = new LogEventInfo { TimeStamp = DateTime.Now };
+                    var filename = fileTarget.FileName.Render(logEventInfo).Replace(@"\/", @"\").Replace("/", @"\");
+                    results.Add(filename);
+                }
+            }
+            return results;
+        }
+
+        private static void Process()
+        {
+            logger.Trace(() => nameof(Process));
+
+            using var processor = Resolver.Instance.Resolve<ICbusProcessor>();
+
+            try
+            {
+                processor.Connect();
+                if (!processor.IsConnected)
+                {
+                    Console.WriteLine("Failed to connect CBUS processor.");
+                    return;
+                }
+
+                // Wait for the program to be terminated.
+                autoResetEvent.WaitOne();
+
+                // Disconnect the processor.
+                processor.Disconnect();
+            }
+            finally
+            {
+                // Trigger the main method that the processor has been disconnected.
+                autoResetEvent.Set();
+
+                logger.Trace(() => $"{nameof(Process)} terminated.");
+            }
+        }
+
+        private static bool Validate(out int returnCode)
+        {
+            if (settings.PortNumber < 1)
+            {
+                logger.Fatal(() => $"Invalid COM Port number: {settings.PortNumber}.");
+                returnCode = 1;
+                return false;
+            }
+
+            var ports = SerialPort.GetPortNames();
+            if (!ports.Any(p => $"COM{settings.PortNumber}" == p))
+            {
+                logger.Fatal(() => $"COM{settings.PortNumber} is not currently available.");
+                returnCode = 2;
+                return false;
+            }
+
+            returnCode = 0;
+            return true;
+        }
+
+        #endregion
     }
 }

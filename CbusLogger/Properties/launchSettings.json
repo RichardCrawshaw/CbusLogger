@@ -2,7 +2,7 @@
   "profiles": {
     "CbusLogger": {
       "commandName": "Project",
-      "commandLineArgs": "/c3"
+      "commandLineArgs": "/c4 /ls- /lg-"
     }
   }
 }
